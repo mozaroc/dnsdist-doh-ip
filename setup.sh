@@ -1,0 +1,300 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================================================
+# Variables — edit before running
+# ============================================================
+PUBLIC_IP="$(curl -4 -fsSL https://ifconfig.me)"
+EMAIL="admin@example.com"                                    # CHANGE: ACME account email
+CERT_PATH="/etc/dnsdist/certs"
+REPO_URL="https://github.com/YOUR_USERNAME/YOUR_REPO.git"   # CHANGE: git remote URL
+
+# ============================================================
+# Helpers
+# ============================================================
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+
+[[ $EUID -eq 0 ]] || { echo "ERROR: must run as root."; exit 1; }
+
+# Validate IP was resolved
+[[ "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  echo "ERROR: Could not determine public IP (got: '$PUBLIC_IP'). Aborting."
+  exit 1
+}
+log "Public IP: $PUBLIC_IP"
+
+# ============================================================
+# 1. Install system dependencies
+# ============================================================
+log "Updating package index and installing dependencies..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+
+# Add PowerDNS repository for dnsdist on Ubuntu 24.04 (Noble)
+if [[ ! -f /etc/apt/sources.list.d/pdns.list ]]; then
+  log "Adding PowerDNS repository for Ubuntu 24.04 (Noble)..."
+  curl -fsSL https://repo.powerdns.com/FD380FBB-pub.asc \
+    | gpg --dearmor -o /usr/share/keyrings/powerdns-archive-keyring.gpg
+
+  cat > /etc/apt/sources.list.d/pdns.list <<'EOF'
+deb [signed-by=/usr/share/keyrings/powerdns-archive-keyring.gpg] http://repo.powerdns.com/ubuntu noble-dnsdist-19 main
+EOF
+
+  cat > /etc/apt/preferences.d/pdns <<'EOF'
+Package: dnsdist
+Pin: origin repo.powerdns.com
+Pin-Priority: 600
+EOF
+  apt-get update -qq
+fi
+
+apt-get install -y --no-install-recommends \
+  dnsdist \
+  curl \
+  git \
+  socat \
+  openssl \
+  cron
+
+# ============================================================
+# 2. Install acme.sh
+# ============================================================
+ACME_HOME="/root/.acme.sh"
+ACME="${ACME_HOME}/acme.sh"
+
+if [[ ! -f "$ACME" ]]; then
+  log "Installing acme.sh..."
+  curl -fsSL https://get.acme.sh | sh -s -- \
+    --install-online \
+    --home  "$ACME_HOME" \
+    --accountemail "$EMAIL"
+else
+  log "acme.sh already installed, skipping install."
+fi
+
+# ============================================================
+# 3. Obtain TLS certificate for the server's public IP address
+#
+# IMPORTANT — Let's Encrypt limitation:
+#   Let's Encrypt does NOT issue certificates for bare IP addresses
+#   (RFC 8555 §7.1.4 — identifiers of type "ip" are not supported by
+#   Let's Encrypt as of this writing). This script uses ZeroSSL, which
+#   supports IP address certificates via ACME (RFC 8738).
+#
+# Challenge method: http-01 standalone (acme.sh binds port 80 briefly).
+# Port 80 is opened transiently for challenge validation only.
+#
+# Fallback: if ZeroSSL issuance fails for any reason (e.g. network
+# restrictions, rate limits), a self-signed certificate is generated
+# so that dnsdist can still start with TLS enabled. Replace the
+# self-signed cert with a valid one as soon as possible.
+# ============================================================
+mkdir -p "$CERT_PATH"
+chmod 750 "$CERT_PATH"
+
+CERT_FILE="${CERT_PATH}/fullchain.pem"
+KEY_FILE="${CERT_PATH}/key.pem"
+CERT_ONLY="${CERT_PATH}/cert.pem"
+
+issue_zerossl_cert() {
+  log "Requesting ZeroSSL certificate for IP $PUBLIC_IP via http-01 standalone..."
+  "$ACME" --issue \
+    --standalone \
+    --domain      "$PUBLIC_IP" \
+    --server      zerossl \
+    --keylength   2048 \
+    --home        "$ACME_HOME" \
+    --accountemail "$EMAIL"
+}
+
+install_acme_cert() {
+  log "Installing certificate files into $CERT_PATH..."
+  "$ACME" --install-cert \
+    --domain        "$PUBLIC_IP" \
+    --cert-file     "$CERT_ONLY" \
+    --key-file      "$KEY_FILE" \
+    --fullchain-file "$CERT_FILE" \
+    --reloadcmd     "systemctl restart dnsdist" \
+    --home          "$ACME_HOME"
+}
+
+generate_self_signed() {
+  log "WARNING: Falling back to self-signed certificate for IP $PUBLIC_IP."
+  log "         Replace with a valid certificate when possible."
+  openssl req -x509 -nodes \
+    -newkey rsa:2048 \
+    -keyout "$KEY_FILE" \
+    -out    "$CERT_FILE" \
+    -days   90 \
+    -subj   "/CN=${PUBLIC_IP}" \
+    -addext "subjectAltName=IP:${PUBLIC_IP}"
+  cp "$CERT_FILE" "$CERT_ONLY"
+}
+
+if [[ ! -f "$CERT_FILE" ]] || [[ ! -f "$KEY_FILE" ]]; then
+  if issue_zerossl_cert; then
+    install_acme_cert
+  else
+    log "ZeroSSL issuance failed. Generating self-signed fallback certificate."
+    generate_self_signed
+  fi
+else
+  log "Certificate already exists at $CERT_FILE — skipping issuance."
+fi
+
+chmod 640 "$CERT_FILE" "$KEY_FILE" "$CERT_ONLY" 2>/dev/null || true
+
+# ============================================================
+# 4. Write dnsdist configuration
+# ============================================================
+log "Writing /etc/dnsdist/dnsdist.conf..."
+
+mkdir -p /etc/dnsdist
+
+cat > /etc/dnsdist/dnsdist.conf <<'DNSDIST_CONF'
+-- ============================================================
+-- dnsdist configuration
+-- DNS-over-HTTPS (DoH), port 443, with DNS cache
+-- ============================================================
+
+-- ============================================================
+-- BACKEND DNS SERVERS — PLACEHOLDERS, REPLACE BEFORE USE
+-- 192.0.2.x is an RFC 5737 documentation range (not routable).
+-- Replace both entries with the IPs of your actual resolvers.
+-- Do not leave these placeholder values in a production setup.
+-- ============================================================
+newServer({address="192.0.2.1:53", name="placeholder-backend-1"})   -- REPLACE: 192.0.2.1 is a dummy placeholder
+newServer({address="192.0.2.2:53", name="placeholder-backend-2"})   -- REPLACE: 192.0.2.2 is a dummy placeholder
+
+-- ============================================================
+-- DoH listener — binds ONLY on port 443
+-- ============================================================
+addDOHLocal(
+  "0.0.0.0:443",
+  "/etc/dnsdist/certs/fullchain.pem",
+  "/etc/dnsdist/certs/key.pem",
+  "/dns-query",
+  {
+    reusePort       = true,
+    tcpFastOpenSize = 0,
+    minTLSVersion   = "tls1.2",
+  }
+)
+
+-- ============================================================
+-- DNS packet cache (10 000 entries)
+-- ============================================================
+local pc = newPacketCache(10000, {
+  maxTTL              = 86400,
+  minTTL              = 0,
+  temporaryFailureTTL = 60,
+  staleTTL            = 60,
+  dontAge             = false,
+})
+getPool(""):setCache(pc)
+
+-- ============================================================
+-- Connection / security limits
+-- ============================================================
+setMaxUDPOutstanding(65535)
+setMaxTCPConnectionsPerClient(100)
+DNSDIST_CONF
+
+# ============================================================
+# 5. systemd: allow dnsdist to bind to privileged port 443
+# ============================================================
+log "Configuring systemd override for dnsdist..."
+
+OVERRIDE_DIR="/etc/systemd/system/dnsdist.service.d"
+mkdir -p "$OVERRIDE_DIR"
+
+cat > "${OVERRIDE_DIR}/capabilities.conf" <<'EOF'
+[Service]
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+EOF
+
+systemctl daemon-reload
+systemctl enable dnsdist
+systemctl restart dnsdist
+log "dnsdist started."
+
+# ============================================================
+# 6. Daily certificate renewal cron job
+#
+# acme.sh --cron skips renewal when the cert has >30 days left.
+# dnsdist is restarted ONLY when a renewal actually occurs,
+# because the --reloadcmd registered in step 3 is invoked by
+# acme.sh internally — not unconditionally by this cron line.
+# ============================================================
+log "Installing certificate renewal cron job..."
+
+cat > /etc/cron.d/acme-renewal <<CRONEOF
+# Daily certificate renewal via acme.sh.
+# dnsdist is restarted by acme.sh's --reloadcmd ONLY when the
+# certificate is actually renewed (not on every cron run).
+0 3 * * * root ${ACME} --cron --home ${ACME_HOME} >> /var/log/acme-renewal.log 2>&1
+CRONEOF
+chmod 644 /etc/cron.d/acme-renewal
+
+# ============================================================
+# 7. Git: commit all generated configuration files
+# ============================================================
+log "Initialising git repository and committing generated files..."
+
+GIT_ROOT="/etc/dnsdist"
+cd "$GIT_ROOT"
+
+# Exclude the private key from version control
+cat > .gitignore <<'EOF'
+certs/key.pem
+EOF
+
+if [[ ! -d .git ]]; then
+  git init
+  git checkout -b main 2>/dev/null || git branch -M main
+fi
+
+git config user.email "$EMAIL"     2>/dev/null || true
+git config user.name  "dnsdist-setup" 2>/dev/null || true
+
+git add .gitignore dnsdist.conf
+# Stage public cert files if they exist; ignore failure if they are absent
+git add certs/fullchain.pem certs/cert.pem 2>/dev/null || true
+
+if git diff --cached --quiet; then
+  log "Git: nothing new to commit."
+else
+  git commit -m "initial dnsdist + doh setup"
+  log "Git: committed changes."
+fi
+
+# Push to remote if REPO_URL has been customised
+if [[ "$REPO_URL" == *"YOUR_USERNAME"* ]]; then
+  log "WARNING: REPO_URL is still a placeholder — skipping git push."
+  log "         Set REPO_URL at the top of this script, then run:"
+  log "           cd ${GIT_ROOT} && git remote add origin <url> && git push -u origin main"
+else
+  if git remote get-url origin &>/dev/null; then
+    git remote set-url origin "$REPO_URL"
+  else
+    git remote add origin "$REPO_URL"
+  fi
+  git push -u origin main
+  log "Git: pushed to $REPO_URL"
+fi
+
+# ============================================================
+# Done
+# ============================================================
+log "============================================================"
+log "Setup complete."
+log "  DoH endpoint : https://${PUBLIC_IP}/dns-query"
+log "  Certificate  : ${CERT_PATH}"
+log "  Config file  : /etc/dnsdist/dnsdist.conf"
+log ""
+log "ACTION REQUIRED: open /etc/dnsdist/dnsdist.conf and replace"
+log "  the two placeholder backend lines (192.0.2.1 and 192.0.2.2)"
+log "  with the IPs of your actual DNS resolvers, then:"
+log "    systemctl restart dnsdist"
+log "============================================================"
