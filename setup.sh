@@ -94,7 +94,10 @@ log "Force-updating Let's Encrypt account email to $EMAIL..."
 # Fallback: if issuance fails a self-signed certificate is generated
 # so dnsdist can still start. Replace it as soon as possible.
 # ============================================================
+DNSDIST_GROUP="_dnsdist"
+
 mkdir -p "$CERT_PATH"
+chown root:"$DNSDIST_GROUP" "$CERT_PATH"
 chmod 750 "$CERT_PATH"
 
 CERT_FILE="${CERT_PATH}/fullchain.pem"
@@ -117,15 +120,21 @@ issue_letsencrypt_cert() {
     --force
 }
 
+fix_cert_permissions() {
+  chown root:"$DNSDIST_GROUP" "$CERT_FILE" "$KEY_FILE" "$CERT_ONLY" 2>/dev/null || true
+  chmod 640 "$CERT_FILE" "$KEY_FILE" "$CERT_ONLY" 2>/dev/null || true
+}
+
 install_acme_cert() {
   log "Installing certificate files into $CERT_PATH..."
   "$ACME" --install-cert \
-    --domain        "$PUBLIC_IP" \
-    --cert-file     "$CERT_ONLY" \
-    --key-file      "$KEY_FILE" \
+    --domain         "$PUBLIC_IP" \
+    --cert-file      "$CERT_ONLY" \
+    --key-file       "$KEY_FILE" \
     --fullchain-file "$CERT_FILE" \
-    --reloadcmd     "systemctl restart dnsdist" \
-    --home          "$ACME_HOME"
+    --reloadcmd      "chown root:${DNSDIST_GROUP} ${CERT_PATH}/*.pem && chmod 640 ${CERT_PATH}/*.pem && systemctl restart dnsdist" \
+    --home           "$ACME_HOME"
+  fix_cert_permissions
 }
 
 generate_self_signed() {
@@ -139,6 +148,7 @@ generate_self_signed() {
     -subj   "/CN=${PUBLIC_IP}" \
     -addext "subjectAltName=IP:${PUBLIC_IP}"
   cp "$CERT_FILE" "$CERT_ONLY"
+  fix_cert_permissions
 }
 
 if [[ ! -f "$CERT_FILE" ]] || [[ ! -f "$KEY_FILE" ]]; then
@@ -150,9 +160,8 @@ if [[ ! -f "$CERT_FILE" ]] || [[ ! -f "$KEY_FILE" ]]; then
   fi
 else
   log "Certificate already exists at $CERT_FILE — skipping issuance."
+  fix_cert_permissions
 fi
-
-chmod 640 "$CERT_FILE" "$KEY_FILE" "$CERT_ONLY" 2>/dev/null || true
 
 # ============================================================
 # 4. Write dnsdist configuration
