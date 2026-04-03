@@ -73,10 +73,14 @@ else
   log "acme.sh already installed, skipping install."
 fi
 
-# Force-update the contact email on the Let's Encrypt account.
-# Runs on every execution to ensure the registered email stays in sync
-# with the EMAIL variable at the top of this script.
-log "Updating Let's Encrypt account email to $EMAIL..."
+# Register (or re-register) the Let's Encrypt account, then force-update
+# the contact email. --register-account --force is idempotent: it creates
+# the account if absent, or refreshes it if it already exists.
+# --update-account is then called to ensure the email is applied even when
+# the account was pre-existing from a prior run with a different email.
+log "Registering Let's Encrypt account and setting email to $EMAIL..."
+"$ACME" --register-account -m "$EMAIL" --server letsencrypt --force --home "$ACME_HOME"
+log "Force-updating Let's Encrypt account email to $EMAIL..."
 "$ACME" --update-account -m "$EMAIL" --server letsencrypt --home "$ACME_HOME"
 
 # ============================================================
