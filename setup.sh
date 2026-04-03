@@ -6,7 +6,7 @@ set -euo pipefail
 # ============================================================
 PUBLIC_IP="$(curl -4 -fsSL https://ifconfig.me)"
 EMAIL="admin@example.com"                                    # CHANGE: ACME account email
-CERT_PATH="/etc/dnsdist/certs"
+CERT_PATH="/etc/dnsdist/tls"
 REPO_URL="https://github.com/YOUR_USERNAME/YOUR_REPO.git"   # CHANGE: git remote URL
 WEB_PORT=80                                                  # port used transiently for ACME http-01 challenge
 
@@ -170,57 +170,102 @@ log "Writing /etc/dnsdist/dnsdist.conf..."
 
 mkdir -p /etc/dnsdist
 
-cat > /etc/dnsdist/dnsdist.conf <<'DNSDIST_CONF'
--- ============================================================
--- dnsdist configuration
--- DNS-over-HTTPS (DoH), port 443, with DNS cache
--- ============================================================
+# PUBLIC_IP is expanded; no $ signs appear in the Lua config itself.
+cat > /etc/dnsdist/dnsdist.conf <<DNSDIST_CONF
+setACL({"0.0.0.0/0", "::/0"})
+controlSocket("127.0.0.1:5199")
+setKey("1+/a5ZuOIN/cOaJOjzbQQu05fCxEEFiuxDsfbBlePTc=")
+-- ==========================================================================
+-- dnsdist 1.8.3 — Production Public Resolver Configuration
+-- ==========================================================================
 
--- ============================================================
--- BACKEND DNS SERVERS — PLACEHOLDERS, REPLACE BEFORE USE
--- 192.0.2.x is an RFC 5737 documentation range (not routable).
--- Replace both entries with the IPs of your actual resolvers.
--- Do not leave these placeholder values in a production setup.
--- ============================================================
-newServer({address="192.0.2.1:53", name="placeholder-backend-1"})   -- REPLACE: 192.0.2.1 is a dummy placeholder
-newServer({address="192.0.2.2:53", name="placeholder-backend-2"})   -- REPLACE: 192.0.2.2 is a dummy placeholder
+-- --------------------------------------------------------------------------
+-- 1. General settings
+-- --------------------------------------------------------------------------
+setServerPolicy(leastOutstanding)
 
--- ============================================================
--- DoH listener — binds ONLY on port 443
--- ============================================================
-addDOHLocal(
-  "0.0.0.0:443",
-  "/etc/dnsdist/certs/fullchain.pem",
-  "/etc/dnsdist/certs/key.pem",
-  "/dns-query",
-  {
-    reusePort       = true,
-    tcpFastOpenSize = 0,
-    minTLSVersion   = "tls1.2",
-  }
+-- --------------------------------------------------------------------------
+-- 2. TLS certificates (acme.sh)
+-- --------------------------------------------------------------------------
+local tlsCert = "${CERT_PATH}/fullchain.pem"
+local tlsKey  = "${CERT_PATH}/key.pem"
+
+-- --------------------------------------------------------------------------
+-- 3. Listeners — DoH frontend (port 443)
+-- --------------------------------------------------------------------------
+addDOHLocal("${PUBLIC_IP}:443", tlsCert, tlsKey, "/dns-query", {
+  reusePort = true,
+})
+
+-- --------------------------------------------------------------------------
+-- 4. Listeners — DoT frontend (port 853)
+-- --------------------------------------------------------------------------
+addTLSLocal("${PUBLIC_IP}:853", tlsCert, tlsKey, {
+  reusePort = true,
+  provider  = "openssl",
+})
+
+-- --------------------------------------------------------------------------
+-- 5. Backends — openbld.net upstream resolvers via outgoing DoH
+-- --------------------------------------------------------------------------
+newServer({
+  address              = "94.242.58.6:443",
+  tls                  = "openssl",
+  subjectName          = "ada.openbld.net",
+  dohPath              = "/dns-query",
+  validateCertificates = true,
+  name                 = "openbld-ada-1",
+})
+
+newServer({
+  address              = "82.115.4.186:443",
+  tls                  = "openssl",
+  subjectName          = "ada.openbld.net",
+  dohPath              = "/dns-query",
+  validateCertificates = true,
+  name                 = "openbld-ada-2",
+})
+
+newServer({
+  address              = "91.197.1.19:443",
+  tls                  = "openssl",
+  subjectName          = "ada.openbld.net",
+  dohPath              = "/dns-query",
+  validateCertificates = true,
+  name                 = "openbld-ada-3",
+})
+
+-- --------------------------------------------------------------------------
+-- 6. Packet cache
+-- --------------------------------------------------------------------------
+local cache = newPacketCache(50000, {
+  maxTTL              = 86400,
+  minTTL              = 60,
+  temporaryFailureTTL = 60,
+  staleTTL            = 300,
+  numberOfShards      = 32,
+})
+getPool(""):setCache(cache)
+
+-- --------------------------------------------------------------------------
+-- 7. Hardening
+-- --------------------------------------------------------------------------
+addAction(
+  OrRule({
+    QNameRule("bind."),
+    QNameRule("server."),
+  }),
+  RCodeAction(DNSRCode.REFUSED)
 )
 
--- ============================================================
--- DNS packet cache (10 000 entries)
--- ============================================================
-local pc = newPacketCache(10000, {
-  maxTTL              = 86400,
-  minTTL              = 0,
-  temporaryFailureTTL = 60,
-  staleTTL            = 60,
-  dontAge             = false,
-})
-getPool(""):setCache(pc)
+addAction(MaxQPSIPRule(50), DropAction())
 
--- ============================================================
--- Connection / security limits
--- ============================================================
-setMaxUDPOutstanding(65535)
-setMaxTCPConnectionsPerClient(100)
+setTCPRecvTimeout(5)
+setTCPSendTimeout(5)
 DNSDIST_CONF
 
 # ============================================================
-# 5. systemd: allow dnsdist to bind to privileged port 443
+# 5. systemd: allow dnsdist to bind to privileged ports 443 and 853
 # ============================================================
 log "Configuring systemd override for dnsdist..."
 
