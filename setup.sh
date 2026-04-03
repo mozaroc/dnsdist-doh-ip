@@ -69,11 +69,15 @@ if [[ ! -f "$ACME" ]]; then
   # not install-time flags — they are passed to acme.sh commands directly.
   export ACME_HOME="$ACME_HOME"
   curl -fsSL https://get.acme.sh | bash
-  # Register account with Let's Encrypt after install
-  "$ACME" --register-account -m "$EMAIL" --server letsencrypt --home "$ACME_HOME"
 else
   log "acme.sh already installed, skipping install."
 fi
+
+# Force-update the contact email on the Let's Encrypt account.
+# Runs on every execution to ensure the registered email stays in sync
+# with the EMAIL variable at the top of this script.
+log "Updating Let's Encrypt account email to $EMAIL..."
+"$ACME" --update-account -m "$EMAIL" --server letsencrypt --home "$ACME_HOME"
 
 # ============================================================
 # 3. Obtain TLS certificate for the server's public IP address
