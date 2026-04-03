@@ -8,6 +8,7 @@ PUBLIC_IP="$(curl -4 -fsSL https://ifconfig.me)"
 EMAIL="admin@example.com"                                    # CHANGE: ACME account email
 CERT_PATH="/etc/dnsdist/certs"
 REPO_URL="https://github.com/YOUR_USERNAME/YOUR_REPO.git"   # CHANGE: git remote URL
+WEB_PORT=80                                                  # port used transiently for ACME http-01 challenge
 
 # ============================================================
 # Helpers
@@ -75,19 +76,13 @@ fi
 # ============================================================
 # 3. Obtain TLS certificate for the server's public IP address
 #
-# IMPORTANT — Let's Encrypt limitation:
-#   Let's Encrypt does NOT issue certificates for bare IP addresses
-#   (RFC 8555 §7.1.4 — identifiers of type "ip" are not supported by
-#   Let's Encrypt as of this writing). This script uses ZeroSSL, which
-#   supports IP address certificates via ACME (RFC 8738).
+# Let's Encrypt supports IP address certificates via its "shortlived"
+# certificate profile (6-day validity, RFC 8738 ip identifier type).
+# acme.sh uses http-01 standalone challenge — port $WEB_PORT is bound
+# transiently for validation only and is not left open afterwards.
 #
-# Challenge method: http-01 standalone (acme.sh binds port 80 briefly).
-# Port 80 is opened transiently for challenge validation only.
-#
-# Fallback: if ZeroSSL issuance fails for any reason (e.g. network
-# restrictions, rate limits), a self-signed certificate is generated
-# so that dnsdist can still start with TLS enabled. Replace the
-# self-signed cert with a valid one as soon as possible.
+# Fallback: if issuance fails a self-signed certificate is generated
+# so dnsdist can still start. Replace it as soon as possible.
 # ============================================================
 mkdir -p "$CERT_PATH"
 chmod 750 "$CERT_PATH"
@@ -96,15 +91,20 @@ CERT_FILE="${CERT_PATH}/fullchain.pem"
 KEY_FILE="${CERT_PATH}/key.pem"
 CERT_ONLY="${CERT_PATH}/cert.pem"
 
-issue_zerossl_cert() {
-  log "Requesting ZeroSSL certificate for IP $PUBLIC_IP via http-01 standalone..."
+issue_letsencrypt_cert() {
+  log "Setting Let's Encrypt as default CA..."
+  "$ACME" --set-default-ca --server letsencrypt --force --home "$ACME_HOME"
+
+  log "Requesting Let's Encrypt short-lived certificate for IP $PUBLIC_IP..."
   "$ACME" --issue \
     --standalone \
-    --domain      "$PUBLIC_IP" \
-    --server      zerossl \
-    --keylength   2048 \
-    --home        "$ACME_HOME" \
-    --accountemail "$EMAIL"
+    --domain               "$PUBLIC_IP" \
+    --server               letsencrypt \
+    --certificate-profile  shortlived \
+    --days                 6 \
+    --httpport             "$WEB_PORT" \
+    --home                 "$ACME_HOME" \
+    --force
 }
 
 install_acme_cert() {
@@ -132,10 +132,10 @@ generate_self_signed() {
 }
 
 if [[ ! -f "$CERT_FILE" ]] || [[ ! -f "$KEY_FILE" ]]; then
-  if issue_zerossl_cert; then
+  if issue_letsencrypt_cert; then
     install_acme_cert
   else
-    log "ZeroSSL issuance failed. Generating self-signed fallback certificate."
+    log "Let's Encrypt issuance failed. Generating self-signed fallback certificate."
     generate_self_signed
   fi
 else
@@ -220,20 +220,21 @@ systemctl restart dnsdist
 log "dnsdist started."
 
 # ============================================================
-# 6. Daily certificate renewal cron job
+# 6. Certificate renewal cron job (every 12 hours)
 #
-# acme.sh --cron skips renewal when the cert has >30 days left.
+# Let's Encrypt shortlived certs are valid for 6 days. acme.sh
+# renews when less than 1/3 of validity remains (~2 days), so
+# running every 12 hours ensures renewal is never missed.
 # dnsdist is restarted ONLY when a renewal actually occurs,
-# because the --reloadcmd registered in step 3 is invoked by
-# acme.sh internally — not unconditionally by this cron line.
+# via the --reloadcmd registered in install_acme_cert above.
 # ============================================================
-log "Installing certificate renewal cron job..."
+log "Installing certificate renewal cron job (every 12 hours)..."
 
 cat > /etc/cron.d/acme-renewal <<CRONEOF
-# Daily certificate renewal via acme.sh.
+# Certificate renewal every 12 hours (required for 6-day shortlived certs).
 # dnsdist is restarted by acme.sh's --reloadcmd ONLY when the
 # certificate is actually renewed (not on every cron run).
-0 3 * * * root ${ACME} --cron --home ${ACME_HOME} >> /var/log/acme-renewal.log 2>&1
+0 */12 * * * root ${ACME} --cron --home ${ACME_HOME} >> /var/log/acme-renewal.log 2>&1
 CRONEOF
 chmod 644 /etc/cron.d/acme-renewal
 
