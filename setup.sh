@@ -65,10 +65,12 @@ ACME="${ACME_HOME}/acme.sh"
 
 if [[ ! -f "$ACME" ]]; then
   log "Installing acme.sh..."
-  curl -fsSL https://get.acme.sh | sh -s -- \
-    --install-online \
-    --home  "$ACME_HOME" \
-    --accountemail "$EMAIL"
+  # Run the installer without extra flags; --home and --accountemail are
+  # not install-time flags — they are passed to acme.sh commands directly.
+  export ACME_HOME="$ACME_HOME"
+  curl -fsSL https://get.acme.sh | bash
+  # Register account with Let's Encrypt after install
+  "$ACME" --register-account -m "$EMAIL" --server letsencrypt --home "$ACME_HOME"
 else
   log "acme.sh already installed, skipping install."
 fi
