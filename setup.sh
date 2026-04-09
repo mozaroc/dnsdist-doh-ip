@@ -91,8 +91,7 @@ log "Force-updating Let's Encrypt account email to $EMAIL..."
 # acme.sh uses http-01 standalone challenge — port $WEB_PORT is bound
 # transiently for validation only and is not left open afterwards.
 #
-# Fallback: if issuance fails a self-signed certificate is generated
-# so dnsdist can still start. Replace it as soon as possible.
+# If issuance fails the script aborts — no self-signed fallback.
 # ============================================================
 DNSDIST_GROUP="_dnsdist"
 
@@ -137,27 +136,12 @@ install_acme_cert() {
   fix_cert_permissions
 }
 
-generate_self_signed() {
-  log "WARNING: Falling back to self-signed certificate for IP $PUBLIC_IP."
-  log "         Replace with a valid certificate when possible."
-  openssl req -x509 -nodes \
-    -newkey rsa:2048 \
-    -keyout "$KEY_FILE" \
-    -out    "$CERT_FILE" \
-    -days   90 \
-    -subj   "/CN=${PUBLIC_IP}" \
-    -addext "subjectAltName=IP:${PUBLIC_IP}"
-  cp "$CERT_FILE" "$CERT_ONLY"
-  fix_cert_permissions
-}
-
 if [[ ! -f "$CERT_FILE" ]] || [[ ! -f "$KEY_FILE" ]]; then
-  if issue_letsencrypt_cert; then
-    install_acme_cert
-  else
-    log "Let's Encrypt issuance failed. Generating self-signed fallback certificate."
-    generate_self_signed
+  if ! issue_letsencrypt_cert; then
+    log "ERROR: Let's Encrypt certificate issuance failed. Aborting."
+    exit 1
   fi
+  install_acme_cert
 else
   log "Certificate already exists at $CERT_FILE — skipping issuance."
   fix_cert_permissions
@@ -206,33 +190,49 @@ addTLSLocal("${PUBLIC_IP}:853", tlsCert, tlsKey, {
 })
 
 -- --------------------------------------------------------------------------
--- 5. Backends — openbld.net upstream resolvers via outgoing DoH
+-- 5. Backends — Google, Cloudflare, Quad9 via outgoing DoH (strict IP, no SNI)
 -- --------------------------------------------------------------------------
+-- Connections are made strictly to the IP address.
+-- validateCertificates=false because no hostname SNI is sent.
+
 newServer({
-  address              = "94.242.58.6:443",
+  address              = "8.8.8.8:443",
   tls                  = "openssl",
-  subjectName          = "ada.openbld.net",
   dohPath              = "/dns-query",
-  validateCertificates = true,
-  name                 = "openbld-ada-1",
+  validateCertificates = false,
+  name                 = "google-1",
 })
 
 newServer({
-  address              = "82.115.4.186:443",
+  address              = "8.8.4.4:443",
   tls                  = "openssl",
-  subjectName          = "ada.openbld.net",
   dohPath              = "/dns-query",
-  validateCertificates = true,
-  name                 = "openbld-ada-2",
+  validateCertificates = false,
+  name                 = "google-2",
 })
 
 newServer({
-  address              = "91.197.1.19:443",
+  address              = "1.1.1.1:443",
   tls                  = "openssl",
-  subjectName          = "ada.openbld.net",
   dohPath              = "/dns-query",
-  validateCertificates = true,
-  name                 = "openbld-ada-3",
+  validateCertificates = false,
+  name                 = "cloudflare-1",
+})
+
+newServer({
+  address              = "1.0.0.1:443",
+  tls                  = "openssl",
+  dohPath              = "/dns-query",
+  validateCertificates = false,
+  name                 = "cloudflare-2",
+})
+
+newServer({
+  address              = "9.9.9.9:443",
+  tls                  = "openssl",
+  dohPath              = "/dns-query",
+  validateCertificates = false,
+  name                 = "quad9",
 })
 
 -- --------------------------------------------------------------------------
