@@ -25,6 +25,13 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 log "Public IP: $PUBLIC_IP"
 
 # ============================================================
+# User choices
+# ============================================================
+read -rp "Do you want to enable blocking of advertising domains? [y/N]: " _block_reply
+USE_BLOCKLIST=false
+[[ "${_block_reply,,}" == y* ]] && USE_BLOCKLIST=true
+
+# ============================================================
 # 1. Install system dependencies
 # ============================================================
 log "Updating package index and installing dependencies..."
@@ -249,6 +256,7 @@ local cache = newPacketCache(50000, {
 })
 getPool(""):setCache(cache)
 
+$(if $USE_BLOCKLIST; then cat <<'LUABLOCK'
 -- --------------------------------------------------------------------------
 -- 7. Domain blocklist — SuffixMatchNode
 -- Loaded from /etc/dnsdist/blocklist.txt, updated daily by cron.
@@ -273,6 +281,8 @@ else
   infolog("blocklist: /etc/dnsdist/blocklist.txt not found — no domains blocked yet.")
 end
 addAction(SuffixMatchNodeRule(blockList), RCodeAction(DNSRCode.REFUSED))
+LUABLOCK
+fi)
 
 -- --------------------------------------------------------------------------
 -- 8. Hardening
@@ -294,16 +304,17 @@ DNSDIST_CONF
 # ============================================================
 # 5. Domain blocklist — initial download + update script + cron
 # ============================================================
-BLOCKLIST_URL="https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/pro.txt"
-BLOCKLIST_FILE="/etc/dnsdist/blocklist.txt"
-UPDATE_SCRIPT="/usr/local/bin/update-dnsdist-blocklist.sh"
+if $USE_BLOCKLIST; then
+  BLOCKLIST_URL="https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/pro.txt"
+  BLOCKLIST_FILE="/etc/dnsdist/blocklist.txt"
+  UPDATE_SCRIPT="/usr/local/bin/update-dnsdist-blocklist.sh"
 
-log "Downloading initial blocklist from $BLOCKLIST_URL..."
-curl -fsSL "$BLOCKLIST_URL" -o "$BLOCKLIST_FILE"
-log "Blocklist saved to $BLOCKLIST_FILE ($(wc -l < "$BLOCKLIST_FILE") lines)."
+  log "Downloading initial blocklist from $BLOCKLIST_URL..."
+  curl -fsSL "$BLOCKLIST_URL" -o "$BLOCKLIST_FILE"
+  log "Blocklist saved to $BLOCKLIST_FILE ($(wc -l < "$BLOCKLIST_FILE") lines)."
 
-log "Writing blocklist update script to $UPDATE_SCRIPT..."
-cat > "$UPDATE_SCRIPT" <<'UPDATESCRIPT'
+  log "Writing blocklist update script to $UPDATE_SCRIPT..."
+  cat > "$UPDATE_SCRIPT" <<'UPDATESCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -315,14 +326,17 @@ curl -fsSL "$BLOCKLIST_URL" -o "$TMP_FILE"
 mv "$TMP_FILE" "$BLOCKLIST_FILE"
 systemctl restart dnsdist
 UPDATESCRIPT
-chmod 750 "$UPDATE_SCRIPT"
+  chmod 750 "$UPDATE_SCRIPT"
 
-log "Installing daily blocklist cron job..."
-cat > /etc/cron.d/dnsdist-blocklist <<EOF
+  log "Installing daily blocklist cron job..."
+  cat > /etc/cron.d/dnsdist-blocklist <<EOF
 # Daily blocklist update — downloads fresh list and restarts dnsdist.
 0 4 * * * root ${UPDATE_SCRIPT} >> /var/log/dnsdist-blocklist.log 2>&1
 EOF
-chmod 644 /etc/cron.d/dnsdist-blocklist
+  chmod 644 /etc/cron.d/dnsdist-blocklist
+else
+  log "Domain blocking disabled — skipping blocklist download and cron."
+fi
 
 # ============================================================
 # 6. systemd: allow dnsdist to bind to privileged ports 443 and 853
@@ -371,5 +385,5 @@ log "  DoH endpoint : https://${PUBLIC_IP}/dns-query"
 log "  DoT endpoint : tls://${PUBLIC_IP}:853"
 log "  Certificate  : ${CERT_PATH}"
 log "  Config file  : /etc/dnsdist/dnsdist.conf"
-log "  Blocklist    : /etc/dnsdist/blocklist.txt (updated daily at 04:00)"
+$USE_BLOCKLIST && log "  Blocklist    : /etc/dnsdist/blocklist.txt (updated daily at 04:00)" || true
 log "============================================================"
