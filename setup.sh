@@ -153,11 +153,14 @@ log "Writing /etc/dnsdist/dnsdist.conf..."
 
 mkdir -p /etc/dnsdist
 
-# PUBLIC_IP is expanded; no $ signs appear in the Lua config itself.
+DNSDIST_KEY=$(openssl rand -base64 32)
+log "Generated dnsdist control key."
+
+# PUBLIC_IP, CERT_PATH, and DNSDIST_KEY are expanded by the shell.
 cat > /etc/dnsdist/dnsdist.conf <<DNSDIST_CONF
 setACL({"0.0.0.0/0", "::/0"})
 controlSocket("127.0.0.1:5199")
-setKey("1+/a5ZuOIN/cOaJOjzbQQu05fCxEEFiuxDsfbBlePTc=")
+setKey("${DNSDIST_KEY}")
 -- ==========================================================================
 -- dnsdist 1.8.3 — Production Public Resolver Configuration
 -- ==========================================================================
