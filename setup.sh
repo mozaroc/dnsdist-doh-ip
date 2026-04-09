@@ -5,7 +5,8 @@ set -euo pipefail
 # Variables — edit before running
 # ============================================================
 PUBLIC_IP="$(curl -4 -fsSL https://ifconfig.me)"
-EMAIL="admin@example.com"                                    # CHANGE: ACME account email
+_rnd() { tr -dc 'a-z0-9' </dev/urandom | head -c "$1"; }
+EMAIL="$(_rnd 10)@$(_rnd 8).com"                             # random throwaway address for ACME registration
 CERT_PATH="/etc/dnsdist/tls"
 REPO_URL="https://github.com/YOUR_USERNAME/YOUR_REPO.git"   # CHANGE: git remote URL
 WEB_PORT=80                                                  # port used transiently for ACME http-01 challenge
