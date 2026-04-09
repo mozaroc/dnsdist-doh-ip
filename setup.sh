@@ -8,7 +8,6 @@ PUBLIC_IP="$(curl -4 -fsSL https://ifconfig.me)"
 _rnd() { local o; o=$(openssl rand -hex 32); echo "${o:0:$1}"; }
 EMAIL="$(_rnd 10)@$(_rnd 8).com"                             # random throwaway address for ACME registration
 CERT_PATH="/etc/dnsdist/tls"
-REPO_URL="https://github.com/YOUR_USERNAME/YOUR_REPO.git"   # CHANGE: git remote URL
 WEB_PORT=80                                                  # port used transiently for ACME http-01 challenge
 
 # ============================================================
@@ -53,7 +52,6 @@ fi
 apt-get install -y --no-install-recommends \
   dnsdist \
   curl \
-  git \
   socat \
   openssl \
   cron
@@ -362,53 +360,6 @@ CRONEOF
 chmod 644 /etc/cron.d/acme-renewal
 
 # ============================================================
-# 7. Git: commit all generated configuration files
-# ============================================================
-log "Initialising git repository and committing generated files..."
-
-GIT_ROOT="/etc/dnsdist"
-cd "$GIT_ROOT"
-
-# Exclude the private key from version control
-cat > .gitignore <<'EOF'
-tls/key.pem
-EOF
-
-if [[ ! -d .git ]]; then
-  git init
-  git checkout -b main 2>/dev/null || git branch -M main
-fi
-
-git config user.email "$EMAIL"     2>/dev/null || true
-git config user.name  "dnsdist-setup" 2>/dev/null || true
-
-git add .gitignore dnsdist.conf blocklist.txt
-# Stage public cert files if they exist; ignore failure if they are absent
-git add tls/fullchain.pem tls/cert.pem 2>/dev/null || true
-
-if git diff --cached --quiet; then
-  log "Git: nothing new to commit."
-else
-  git commit -m "initial dnsdist + doh setup"
-  log "Git: committed changes."
-fi
-
-# Push to remote if REPO_URL has been customised
-if [[ "$REPO_URL" == *"YOUR_USERNAME"* ]]; then
-  log "WARNING: REPO_URL is still a placeholder — skipping git push."
-  log "         Set REPO_URL at the top of this script, then run:"
-  log "           cd ${GIT_ROOT} && git remote add origin <url> && git push -u origin main"
-else
-  if git remote get-url origin &>/dev/null; then
-    git remote set-url origin "$REPO_URL"
-  else
-    git remote add origin "$REPO_URL"
-  fi
-  git push -u origin main
-  log "Git: pushed to $REPO_URL"
-fi
-
-# ============================================================
 # Done
 # ============================================================
 log "============================================================"
@@ -417,8 +368,5 @@ log "  DoH endpoint : https://${PUBLIC_IP}/dns-query"
 log "  Certificate  : ${CERT_PATH}"
 log "  Config file  : /etc/dnsdist/dnsdist.conf"
 log ""
-log "ACTION REQUIRED: open /etc/dnsdist/dnsdist.conf and replace"
-log "  the two placeholder backend lines (192.0.2.1 and 192.0.2.2)"
-log "  with the IPs of your actual DNS resolvers, then:"
-log "    systemctl restart dnsdist"
+log "  Blocklist     : /etc/dnsdist/blocklist.txt (updated daily at 04:00)"
 log "============================================================"
