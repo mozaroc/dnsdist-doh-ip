@@ -30,7 +30,7 @@ log "Public IP: $PUBLIC_IP"
 USE_BLOCKLIST=false
 _block_reply=""
 read -rp "Do you want to enable blocking of advertising domains? [y/N]: " _block_reply </dev/tty || true
-[[ "${_block_reply}" == [yY]* ]] && USE_BLOCKLIST=true
+[[ "${_block_reply,,}" == y* ]] && USE_BLOCKLIST=true
 
 # ============================================================
 # 1. Install system dependencies
