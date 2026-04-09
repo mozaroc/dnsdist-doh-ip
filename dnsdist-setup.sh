@@ -200,48 +200,52 @@ addTLSLocal("${PUBLIC_IP}:853", tlsCert, tlsKey, {
 })
 
 -- --------------------------------------------------------------------------
--- 5. Backends — Google, Cloudflare, Quad9 via outgoing DoH (strict IP, no SNI)
+-- 5. Backends — Google, Cloudflare, Quad9 via outgoing DoH
+-- Connections go to the IP address; subjectName provides SNI and cert validation.
 -- --------------------------------------------------------------------------
--- Connections are made strictly to the IP address.
--- validateCertificates=false because no hostname SNI is sent.
 
 newServer({
   address              = "8.8.8.8:443",
   tls                  = "openssl",
+  subjectName          = "dns.google",
   dohPath              = "/dns-query",
-  validateCertificates = false,
+  validateCertificates = true,
   name                 = "google-1",
 })
 
 newServer({
   address              = "8.8.4.4:443",
   tls                  = "openssl",
+  subjectName          = "dns.google",
   dohPath              = "/dns-query",
-  validateCertificates = false,
+  validateCertificates = true,
   name                 = "google-2",
 })
 
 newServer({
   address              = "1.1.1.1:443",
   tls                  = "openssl",
+  subjectName          = "cloudflare-dns.com",
   dohPath              = "/dns-query",
-  validateCertificates = false,
+  validateCertificates = true,
   name                 = "cloudflare-1",
 })
 
 newServer({
   address              = "1.0.0.1:443",
   tls                  = "openssl",
+  subjectName          = "cloudflare-dns.com",
   dohPath              = "/dns-query",
-  validateCertificates = false,
+  validateCertificates = true,
   name                 = "cloudflare-2",
 })
 
 newServer({
   address              = "9.9.9.9:443",
   tls                  = "openssl",
+  subjectName          = "dns.quad9.net",
   dohPath              = "/dns-query",
-  validateCertificates = false,
+  validateCertificates = true,
   name                 = "quad9",
 })
 
