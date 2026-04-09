@@ -306,7 +306,7 @@ DNSDIST_CONF
 # 5. Domain blocklist — initial download + update script + cron
 # ============================================================
 if $USE_BLOCKLIST; then
-  BLOCKLIST_URL="https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/pro.txt"
+  BLOCKLIST_URL="https://raw.githubusercontent.com/m0zgen/bld-agregator/data/blocklist.txt"
   BLOCKLIST_FILE="/etc/dnsdist/blocklist.txt"
   UPDATE_SCRIPT="/usr/local/bin/update-dnsdist-blocklist.sh"
 
@@ -319,7 +319,7 @@ if $USE_BLOCKLIST; then
 #!/usr/bin/env bash
 set -euo pipefail
 
-BLOCKLIST_URL="https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/pro.txt"
+BLOCKLIST_URL="https://raw.githubusercontent.com/m0zgen/bld-agregator/data/blocklist.txt"
 BLOCKLIST_FILE="/etc/dnsdist/blocklist.txt"
 TMP_FILE="$(mktemp)"
 
