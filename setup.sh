@@ -248,7 +248,32 @@ local cache = newPacketCache(50000, {
 getPool(""):setCache(cache)
 
 -- --------------------------------------------------------------------------
--- 7. Hardening
+-- 7. Domain blocklist — SuffixMatchNode
+-- Loaded from /etc/dnsdist/blocklist.txt, updated daily by cron.
+-- Evaluated before rate-limiting so blocked domains are refused immediately.
+-- --------------------------------------------------------------------------
+local blockList = newSuffixMatchNode()
+local blFile = io.open("/etc/dnsdist/blocklist.txt", "r")
+if blFile then
+  for line in blFile:lines() do
+    line = line:match("^%s*(.-)%s*$")       -- trim leading/trailing whitespace
+    if line ~= "" and not line:match("^#") then
+      local ok, err = pcall(function()
+        blockList:add(newDNSName(line))
+      end)
+      if not ok then
+        infolog("blocklist: skipping invalid entry '" .. line .. "': " .. tostring(err))
+      end
+    end
+  end
+  blFile:close()
+else
+  infolog("blocklist: /etc/dnsdist/blocklist.txt not found — no domains blocked yet.")
+end
+addAction(SuffixMatchNodeRule(blockList), RCodeAction(DNSRCode.REFUSED))
+
+-- --------------------------------------------------------------------------
+-- 8. Hardening
 -- --------------------------------------------------------------------------
 addAction(
   OrRule({
@@ -265,7 +290,40 @@ setTCPSendTimeout(5)
 DNSDIST_CONF
 
 # ============================================================
-# 5. systemd: allow dnsdist to bind to privileged ports 443 and 853
+# 5. Domain blocklist — initial download + update script + cron
+# ============================================================
+BLOCKLIST_URL="https://raw.githubusercontent.com/m0zgen/bld-agregator/refs/heads/data/blocklist.txt"
+BLOCKLIST_FILE="/etc/dnsdist/blocklist.txt"
+UPDATE_SCRIPT="/usr/local/bin/update-dnsdist-blocklist.sh"
+
+log "Downloading initial blocklist from $BLOCKLIST_URL..."
+curl -fsSL "$BLOCKLIST_URL" -o "$BLOCKLIST_FILE"
+log "Blocklist saved to $BLOCKLIST_FILE ($(wc -l < "$BLOCKLIST_FILE") lines)."
+
+log "Writing blocklist update script to $UPDATE_SCRIPT..."
+cat > "$UPDATE_SCRIPT" <<'UPDATESCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+BLOCKLIST_URL="https://raw.githubusercontent.com/m0zgen/bld-agregator/refs/heads/data/blocklist.txt"
+BLOCKLIST_FILE="/etc/dnsdist/blocklist.txt"
+TMP_FILE="$(mktemp)"
+
+curl -fsSL "$BLOCKLIST_URL" -o "$TMP_FILE"
+mv "$TMP_FILE" "$BLOCKLIST_FILE"
+systemctl restart dnsdist
+UPDATESCRIPT
+chmod 750 "$UPDATE_SCRIPT"
+
+log "Installing daily blocklist cron job..."
+cat > /etc/cron.d/dnsdist-blocklist <<EOF
+# Daily blocklist update — downloads fresh list and restarts dnsdist.
+0 4 * * * root ${UPDATE_SCRIPT} >> /var/log/dnsdist-blocklist.log 2>&1
+EOF
+chmod 644 /etc/cron.d/dnsdist-blocklist
+
+# ============================================================
+# 6. systemd: allow dnsdist to bind to privileged ports 443 and 853
 # ============================================================
 log "Configuring systemd override for dnsdist..."
 
@@ -312,7 +370,7 @@ cd "$GIT_ROOT"
 
 # Exclude the private key from version control
 cat > .gitignore <<'EOF'
-certs/key.pem
+tls/key.pem
 EOF
 
 if [[ ! -d .git ]]; then
@@ -323,9 +381,9 @@ fi
 git config user.email "$EMAIL"     2>/dev/null || true
 git config user.name  "dnsdist-setup" 2>/dev/null || true
 
-git add .gitignore dnsdist.conf
+git add .gitignore dnsdist.conf blocklist.txt
 # Stage public cert files if they exist; ignore failure if they are absent
-git add certs/fullchain.pem certs/cert.pem 2>/dev/null || true
+git add tls/fullchain.pem tls/cert.pem 2>/dev/null || true
 
 if git diff --cached --quiet; then
   log "Git: nothing new to commit."
