@@ -368,6 +368,18 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 EOF
 
+# dnsdist >= 2.0 defaults to /etc/dnsdist/dnsdist.yml and only falls back to
+# dnsdist.conf (Lua) when no -C is given — but on 2.1 that fallback doesn't
+# kick in for --check-config, so ExecStartPre fails with no dnsdist.yml
+# present. Pin -C explicitly so it always loads our Lua config.
+cat > "${OVERRIDE_DIR}/config-path.conf" <<'EOF'
+[Service]
+ExecStartPre=
+ExecStartPre=/usr/bin/dnsdist --check-config -C /etc/dnsdist/dnsdist.conf
+ExecStart=
+ExecStart=/usr/bin/dnsdist --supervised --disable-syslog -C /etc/dnsdist/dnsdist.conf
+EOF
+
 systemctl daemon-reload
 systemctl enable dnsdist
 systemctl restart dnsdist
