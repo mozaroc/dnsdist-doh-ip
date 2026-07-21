@@ -23,7 +23,12 @@ What it does:
 5. Adds a systemd override granting `CAP_NET_BIND_SERVICE` so dnsdist can bind to 443/853 unprivileged.
 6. Installs a cron job renewing the certificate every 12 hours (required since the cert is only valid 6 days); dnsdist restarts automatically only when a renewal actually happens.
 
-Run:
+One-command install:
+```bash
+curl -fsSL https://raw.githubusercontent.com/mozaroc/dnsdist-doh-ip/main/dnsdist-setup.sh | sudo bash
+```
+
+Or clone and run:
 ```bash
 sudo ./dnsdist-setup.sh
 ```
