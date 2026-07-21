@@ -51,14 +51,14 @@ case "$VERSION_CODENAME" in
     ;;
 esac
 
-if [[ ! -f /etc/apt/sources.list.d/pdns.list ]]; then
-  log "Adding PowerDNS repository for Ubuntu ($VERSION_CODENAME, suite: $PDNS_SUITE)..."
+PDNS_LIST_LINE="deb [signed-by=/usr/share/keyrings/powerdns-archive-keyring.gpg] http://repo.powerdns.com/ubuntu ${PDNS_SUITE} main"
+
+if [[ ! -f /etc/apt/sources.list.d/pdns.list ]] || [[ "$(cat /etc/apt/sources.list.d/pdns.list)" != "$PDNS_LIST_LINE" ]]; then
+  log "Adding/updating PowerDNS repository for Ubuntu ($VERSION_CODENAME, suite: $PDNS_SUITE)..."
   curl -fsSL https://repo.powerdns.com/FD380FBB-pub.asc \
     | gpg --dearmor -o /usr/share/keyrings/powerdns-archive-keyring.gpg
 
-  cat > /etc/apt/sources.list.d/pdns.list <<EOF
-deb [signed-by=/usr/share/keyrings/powerdns-archive-keyring.gpg] http://repo.powerdns.com/ubuntu ${PDNS_SUITE} main
-EOF
+  echo "$PDNS_LIST_LINE" > /etc/apt/sources.list.d/pdns.list
 
   cat > /etc/apt/preferences.d/pdns <<'EOF'
 Package: dnsdist
