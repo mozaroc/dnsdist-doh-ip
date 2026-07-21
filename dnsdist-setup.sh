@@ -39,14 +39,25 @@ log "Updating package index and installing dependencies..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 
-# Add PowerDNS repository for dnsdist on Ubuntu 24.04 (Noble)
+# Add PowerDNS repository for dnsdist. Suite picked per Ubuntu codename —
+# repo.powerdns.com publishes a separate dnsdist branch per release.
+. /etc/os-release
+case "$VERSION_CODENAME" in
+  noble)    PDNS_SUITE="noble-dnsdist-19" ;;
+  resolute) PDNS_SUITE="resolute-dnsdist-21" ;;
+  *)
+    echo "ERROR: unsupported Ubuntu release '$VERSION_CODENAME' (supported: noble 24.04, resolute 26.04). Aborting."
+    exit 1
+    ;;
+esac
+
 if [[ ! -f /etc/apt/sources.list.d/pdns.list ]]; then
-  log "Adding PowerDNS repository for Ubuntu 24.04 (Noble)..."
+  log "Adding PowerDNS repository for Ubuntu ($VERSION_CODENAME, suite: $PDNS_SUITE)..."
   curl -fsSL https://repo.powerdns.com/FD380FBB-pub.asc \
     | gpg --dearmor -o /usr/share/keyrings/powerdns-archive-keyring.gpg
 
-  cat > /etc/apt/sources.list.d/pdns.list <<'EOF'
-deb [signed-by=/usr/share/keyrings/powerdns-archive-keyring.gpg] http://repo.powerdns.com/ubuntu noble-dnsdist-19 main
+  cat > /etc/apt/sources.list.d/pdns.list <<EOF
+deb [signed-by=/usr/share/keyrings/powerdns-archive-keyring.gpg] http://repo.powerdns.com/ubuntu ${PDNS_SUITE} main
 EOF
 
   cat > /etc/apt/preferences.d/pdns <<'EOF'
